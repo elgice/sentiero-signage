@@ -77,7 +77,7 @@ def get_category_id(slug):
     FIX #1: Το WooCommerce REST API v3 δέχεται μόνο αριθμητικό category ID,
     όχι slug. Κάνουμε lookup πρώτα μέσω /product_categories?slug=...
     """
-    url  = f"{WC_BASE_URL}/wp-json/wc/v3/product_categories"
+    url  = f"{WC_BASE_URL}/wp-json/wc/v3/products/categories"
     resp = requests.get(url, params={"slug": slug}, auth=AUTH, timeout=30)
     resp.raise_for_status()
     data = resp.json()
