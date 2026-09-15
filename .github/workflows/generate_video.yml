@@ -1,0 +1,52 @@
+name: Ανανέωση video για την ψηφιακή βιτρίνα
+
+# Πότε τρέχει αυτόματα:
+on:
+  schedule:
+    - cron: "0 3 * * *"   # κάθε μέρα στις 03:00 UTC (~06:00 ώρα Ελλάδας)
+  workflow_dispatch:        # + κουμπί "Run workflow" στο GitHub, για χειροκίνητο τεστ
+
+permissions:
+  contents: write   # απαραίτητο για να δημοσιεύεται το Release
+
+jobs:
+  build-video:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Εγκατάσταση Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Εγκατάσταση Python dependencies
+        run: pip install -r requirements.txt
+
+      # FIX: Προσθήκη fonts-noto για πλήρη υποστήριξη ελληνικών χαρακτήρων
+      - name: Εγκατάσταση ffmpeg & Noto fonts
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-noto
+
+      - name: Δημιουργία video
+        env:
+          WC_CONSUMER_KEY: ${{ secrets.WC_CONSUMER_KEY }}
+          WC_CONSUMER_SECRET: ${{ secrets.WC_CONSUMER_SECRET }}
+          # Προαιρετικά — ορίστε τα ως Secrets αν θέλετε:
+          # WC_BASE_URL: ${{ secrets.WC_BASE_URL }}
+          # WC_CATEGORY_SLUG: ${{ secrets.WC_CATEGORY_SLUG }}
+          # NUM_PRODUCTS: "60"
+        run: python sentiero_video_pipeline.py
+
+      # FIX: Αντικατάσταση softprops με ncipollo που υποστηρίζει allowUpdates: true
+      # Έτσι κάθε run ενημερώνει το ίδιο release χωρίς σφάλμα "tag already exists".
+      - name: Δημοσίευση ως σταθερό αρχείο (GitHub Release "latest")
+        uses: ncipollo/release-action@v1
+        with:
+          tag: latest
+          name: "Τελευταία ενημέρωση"
+          allowUpdates: true
+          removeArtifacts: true
+          artifacts: sentiero_new_collection.mp4
+          token: ${{ secrets.GITHUB_TOKEN }}
+
