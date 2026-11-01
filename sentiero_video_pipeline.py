@@ -16,6 +16,7 @@ import shutil
 import subprocess
 from datetime import date
 import requests
+import qrcode
 from PIL import Image, ImageDraw, ImageFont
 
 # ================= CONFIG =================
@@ -89,7 +90,7 @@ def fetch_products(category_id):
             "page":     page,
             "status":   "publish",
         }
-        resp  = requests.get(url, params=params, auth=AUTH, timeout=30)
+        resp = requests.get(url, params=params, auth=AUTH, timeout=30)
         resp.raise_for_status()
         batch = resp.json()
         if not batch:
@@ -103,15 +104,41 @@ def fetch_products(category_id):
                 or ""
             )
             sale_price = item.get("sale_price") or ""
+            # Link προϊόντος για το QR code
+            product_url = (
+                item.get("permalink")
+                or f"{WC_BASE_URL}/?p={item.get('id', '')}"
+                or WC_BASE_URL
+            )
             products.append({
-                "name":       item["name"],
-                "price":      price,
-                "sale_price": sale_price,
-                "image_url":  image_url,
+                "name":        item["name"],
+                "price":       price,
+                "sale_price":  sale_price,
+                "image_url":   image_url,
+                "permalink":   product_url,
             })
         page += 1
 
     return products[:NUM_PRODUCTS]
+
+
+def generate_qr(url, size=190):
+    """Δημιουργεί καθαρό QR Code συνδεδεμένο με τη σελίδα του προϊόντος."""
+    try:
+        qr = qrcode.QRCode(
+            version=None,
+            error_correction=qrcode.constants.ERROR_CORRECT_M,
+            box_size=8,
+            border=1,
+        )
+        qr.add_data(url)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color=BRAND_COLOR, back_color="white").convert("RGB")
+        resample_filter = getattr(Image, "Resampling", Image).LANCZOS
+        return img.resize((size, size), resample_filter)
+    except Exception as e:
+        print(f"     ⚠ Σφάλμα δημιουργίας QR ({url}): {e}")
+        return None
 
 
 def download_image(url, dest_path):
@@ -122,22 +149,21 @@ def download_image(url, dest_path):
             f.write(resp.content)
         return True
     except Exception as e:
-        print(f"     Αδυνατη ληψη: {url} | {e}")
+        print(f"     ⚠ Αδύνατη λήψη: {url}\n       Αιτία: {e}")
         return False
 
 
 # ================= 2) ΔΗΜΙΟΥΡΓΙΑ CREATIVE =================
 
 def cover_fit(img, w, h):
-    src_ratio    = img.width / img.height
+    src_ratio = img.width / img.height
     target_ratio = w / h
     if src_ratio > target_ratio:
         new_h, new_w = h, int(h * src_ratio)
     else:
         new_w, new_h = w, int(w / src_ratio)
-    img  = img.resize((new_w, new_h), Image.LANCZOS)
-    left = (new_w - w) // 2
-    top  = (new_h - h) // 2
+    img = img.resize((new_w, new_h))
+    left, top = (new_w - w) // 2, (new_h - h) // 2
     return img.crop((left, top, left + w, top + h))
 
 
@@ -160,22 +186,22 @@ def build_creative(product, image_path, index):
     canvas = Image.new("RGB", (CANVAS_W, CANVAS_H), ACCENT_COLOR)
     draw   = ImageDraw.Draw(canvas)
 
-    # Top bar με λογότυπο
-    top_bar_h  = 180
+    # ── Top bar με λογότυπο ──
+    top_bar_h = 180
     draw.rectangle([0, 0, CANVAS_W, top_bar_h], fill=BRAND_COLOR)
-    logo       = Image.open(LOGO_PATH).convert("RGBA")
+    logo      = Image.open(LOGO_PATH).convert("RGBA")
     logo_max_h = int(top_bar_h * 0.55)
-    scale      = logo_max_h / logo.height
-    logo       = logo.resize((int(logo.width * scale), logo_max_h), Image.LANCZOS)
+    scale     = logo_max_h / logo.height
+    logo      = logo.resize((int(logo.width * scale), logo_max_h), Image.LANCZOS)
     canvas.paste(logo, ((CANVAS_W - logo.width) // 2, (top_bar_h - logo.height) // 2), logo)
 
-    # Badge NEO
+    # ── Badge "ΝΕΟ" ──
     badge_font = ImageFont.truetype(FONT_BOLD, 40)
     bx, by, bw, bh = 60, top_bar_h + 40, 200, 80
     draw.rounded_rectangle([bx, by, bx + bw, by + bh], radius=12, fill=BADGE_COLOR)
     draw.text((bx + bw / 2, by + bh / 2), "NEO", font=badge_font, fill=ACCENT_COLOR, anchor="mm")
 
-    # Φωτογραφία
+    # ── Φωτογραφία προϊόντος ──
     img_area_top, img_area_h, img_margin = top_bar_h + 160, 1700, 60
     product_img = cover_fit(
         Image.open(image_path).convert("RGB"),
@@ -184,20 +210,20 @@ def build_creative(product, image_path, index):
     )
     canvas.paste(product_img, (img_margin, img_area_top))
 
-    # Τίτλος
+    # ── Τίτλος με pixel-based wrap ──
     title_font = ImageFont.truetype(FONT_BOLD, 58)
-    max_text_w = CANVAS_W - 120
+    max_text_w = CANVAS_W - 120   # 60px margin από κάθε πλευρά
     title_y    = img_area_top + img_area_h + 55
     lines      = wrap_text(product["name"], title_font, max_text_w)
-    for li, line in enumerate(lines[:3]):
+    for li, line in enumerate(lines[:3]):   # max 3 γραμμές
         draw.text((CANVAS_W / 2, title_y + li * 75), line,
                   font=title_font, fill=BRAND_COLOR, anchor="mm")
 
-    # Τιμή
+    # ── Τιμή (με sale αν υπάρχει) ──
     price_font = ImageFont.truetype(FONT_BOLD, 80)
     price_y    = CANVAS_H - 145
-    price      = product.get("price", "")
     sale       = product.get("sale_price", "")
+    price      = product.get("price", "")
 
     if price:
         if sale and sale != price:
@@ -214,11 +240,41 @@ def build_creative(product, image_path, index):
             draw.text((CANVAS_W / 2, price_y), f"{price} EUR",
                       font=price_font, fill=BRAND_COLOR, anchor="mm")
 
-    # Footer ημερομηνία
-    footer_font = ImageFont.truetype(FONT_BOLD, 28)
+    # ── QR Code Call-to-Action (Κάτω Δεξιά) ──
+    product_url = product.get("permalink")
+    if product_url:
+        qr_size = 190
+        qr_img = generate_qr(product_url, size=qr_size)
+        if qr_img:
+            card_w = qr_size + 30
+            card_h = qr_size + 65
+            card_x = CANVAS_W - 60 - card_w
+            card_y = CANVAS_H - 50 - card_h
+
+            # Κάρτα με στρογγυλεμένες γωνίες & περίγραμμα
+            draw.rounded_rectangle(
+                [card_x, card_y, card_x + card_w, card_y + card_h],
+                radius=16,
+                fill=(255, 255, 255),
+                outline=(220, 220, 220),
+                width=2,
+            )
+            # Ετικέτα πάνω από το QR
+            qr_label_font = ImageFont.truetype(FONT_BOLD, 24)
+            draw.text(
+                (card_x + card_w / 2, card_y + 18),
+                "SCAN TO BUY",
+                font=qr_label_font,
+                fill=BRAND_COLOR,
+                anchor="mm",
+            )
+            canvas.paste(qr_img, (card_x + 15, card_y + 35))
+
+    # ── Footer: ημερομηνία ανανέωσης (Κάτω Αριστερά) ──
+    footer_font = ImageFont.truetype(FONT_BOLD, 26)
     today_str   = date.today().strftime("%d %b %Y")
-    draw.text((CANVAS_W - 40, CANVAS_H - 28), today_str,
-              font=footer_font, fill=(200, 200, 200), anchor="rs")
+    draw.text((60, CANVAS_H - 28), today_str,
+              font=footer_font, fill=(180, 180, 180), anchor="ls")
 
     out_path = os.path.join(CREATIVES_DIR, f"creative_{index:03d}.png")
     canvas.save(out_path)
@@ -228,7 +284,7 @@ def build_creative(product, image_path, index):
 # ================= 3) ΣΥΝΑΡΜΟΛΟΓΗΣΗ VIDEO =================
 
 def make_clip_from_image(image_path, index):
-    clip_path      = os.path.join(CLIPS_DIR, f"clip_{index:03d}.mp4")
+    clip_path = os.path.join(CLIPS_DIR, f"clip_{index:03d}.mp4")
     fade_out_start = SECONDS_PER_PRODUCT - FADE_SECONDS
     vf = f"fade=t=in:st=0:d={FADE_SECONDS},fade=t=out:st={fade_out_start}:d={FADE_SECONDS},format=yuv420p"
     cmd = ["ffmpeg", "-y", "-loop", "1", "-i", image_path, "-t", str(SECONDS_PER_PRODUCT),
@@ -246,27 +302,25 @@ def concat_clips(clip_paths, output_path):
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-# ================= MAIN =================
-
 def main():
     if os.path.exists(WORKDIR):
         shutil.rmtree(WORKDIR)
     os.makedirs(CREATIVES_DIR)
     os.makedirs(CLIPS_DIR)
 
-    print("1/3 — Ευρεση κατηγοριας & αντληση προιοντων...")
+    print("1/3 — Εύρεση κατηγορίας & άντληση προϊόντων από WooCommerce...")
     category_id = get_category_id(CATEGORY_SLUG)
     products    = fetch_products(category_id)
-    print(f"     Βρεθηκαν {len(products)} προιοντα.")
+    print(f"     Βρέθηκαν {len(products)} προϊόντα.")
     if not products:
-        raise SystemExit("Δεν βρεθηκαν προιοντα — ελεγξε slug & credentials.")
+        raise SystemExit("Δεν βρέθηκαν προϊόντα — έλεγξε το category slug ή τα credentials.")
 
-    print("2/3 — Δημιουργια creatives...")
-    clip_paths, skipped = [], 0
-
+    print("2/3 — Δημιουργία creatives...")
+    clip_paths = []
+    skipped    = 0
     for i, product in enumerate(products, start=1):
         if not product.get("image_url"):
-            print(f"     [{i}] ΠΑΡΑΛΕΙΨΗ — χωρις εικονα")
+            print(f"     [{i}] ΠΑΡΑΛΕΙΨΗ — {product['name']} (χωρίς φωτογραφία)")
             skipped += 1
             continue
         image_path = os.path.join(CREATIVES_DIR, f"src_{i:03d}.jpg")
@@ -275,15 +329,15 @@ def main():
             continue
         creative_path = build_creative(product, image_path, i)
         clip_paths.append(make_clip_from_image(creative_path, i))
-        print(f"     [{i}/{len(products)}] OK: {product['name']}")
+        print(f"     [{i}/{len(products)}] ✅ {product['name']}")
 
     if not clip_paths:
-        raise SystemExit("Κανενα clip — ελεγξτε τις εικονες.")
+        raise SystemExit("Κανένα clip δεν δημιουργήθηκε — ελέγξτε τις εικόνες των προϊόντων.")
 
-    print(f"\n     {len(clip_paths)} clips (παραλειφθηκαν {skipped})")
-    print("3/3 — Συναρμολογηση MP4...")
+    print(f"\n     Δημιουργήθηκαν {len(clip_paths)} clips (παραλείφθηκαν: {skipped}).")
+    print("3/3 — Συναρμολόγηση τελικού MP4...")
     concat_clips(clip_paths, FINAL_VIDEO)
-    print(f"\nETOIMO: {FINAL_VIDEO}")
+    print(f"\n✅ Έτοιμο: {FINAL_VIDEO}")
 
 
 if __name__ == "__main__":
