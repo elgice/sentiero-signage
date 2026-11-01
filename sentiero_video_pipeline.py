@@ -27,7 +27,7 @@ WC_BASE_URL     = os.environ.get("WC_BASE_URL", "https://sentieroclothing.gr").r
 CATEGORY_SLUG = os.environ.get("WC_CATEGORY_SLUG", "new-collection")
 NUM_PRODUCTS  = int(os.environ.get("NUM_PRODUCTS", "50"))
 
-SECONDS_PER_PRODUCT = 4
+SECONDS_PER_PRODUCT = 15
 FADE_SECONDS        = 0.3
 FPS                 = 30
 
